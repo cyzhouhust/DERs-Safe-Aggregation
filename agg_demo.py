@@ -1,69 +1,43 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.optimize import linprog
+from agg4 import VPPAggregator
+# from vpp_aggregator import VPPAggregator # 假设你把上面的类保存到了文件
 
-# === DER 设置 ===
-DERs = [
-    {"P_min": 0, "P_max": 4, "Q_min": -2, "Q_max": 2},
-    {"P_min": 1, "P_max": 3, "Q_min": -1, "Q_max": 1},
-    {"P_min": 0, "P_max": 2, "Q_min": -0.5, "Q_max": 0.5}
-]
+# --- 1. 配置参数 ---
+vpp_nodes = [10, 15, 18, 20, 25]
+T = 24
+num_vpp = len(vpp_nodes)
 
-# Crisp DOSS 参数（公式55）这是本文的核心
-gamma = [0.5, 0.8, 0.6]  # γ_j^vpp
-chi = [0.4, 0.7, 0.8]    # χ_j^vpp
-omega = 6.0              # ϖ
+# --- 2. 准备输入数据 (模拟资源的上调/下调容量) ---
+# 这里对应你原始代码中的 "I. 模拟 24 小时..." 部分
+# 我们现在先生成好数据，再传给类
+base_p_max = np.array([40000, 10000, 40000, 4000, 4000])
+base_p_min_abs = np.array([1000, 1000, 1000, 1000, 1000])
 
-# === 角度定义 ===
-phi_list = np.linspace(0, 2 * np.pi, 180)
-boundary_doss = []
-boundary_no_doss = []
+p_inj_max_profile = np.zeros((T, num_vpp))
+p_abs_max_profile = np.zeros((T, num_vpp))
 
-# === 遍历每个方向角 ===
-for phi in phi_list:
-    cos_phi = np.cos(phi)
-    tan_phi = np.tan(phi)
+for t in range(T):
+    hour = t + 1
+    scale = 0.5 + 0.5 * np.cos((hour - 12) / 24 * 2 * np.pi)
+    
+    # 构造每个时刻的容量矩阵 (行: 时间, 列: 节点)
+    p_inj_max_profile[t, :] = base_p_max * scale
+    # 吸收容量 (输入应为正值，表示容量大小)
+    p_abs_max_profile[t, :] = base_p_min_abs * (1 + 0.5 * scale)
 
-    num_ders = len(DERs)
-    c = -np.array([cos_phi for _ in range(num_ders)])  # 最大化方向投影
-    bounds = [(der["P_min"], der["P_max"]) for der in DERs]
+# --- 3. 实例化并计算 ---
+# 初始化聚合器
+aggregator = VPPAggregator(vpp_nodes)
 
-    # === 无 DOSS 限制 ===
-    res_no_doss = linprog(c, bounds=bounds)
-    if res_no_doss.success:
-        P_list = res_no_doss.x
-        P_vpp = np.sum(P_list)
-        Q_vpp = P_vpp * tan_phi if np.isfinite(tan_phi) else 0
-        if np.abs(Q_vpp) < 100:  # 防止发散
-            boundary_no_doss.append([P_vpp, Q_vpp])
+# 执行优化
+# 输入：所有时段的所有节点上调容量，所有时段的所有节点下调容量
+results = aggregator.solve_dispatch(p_inj_max_profile, p_abs_max_profile)
 
-    # === 有 DOSS 限制 ===
-    A_doss = [[gamma[j] + chi[j] * tan_phi for j in range(num_ders)]]
-    b_doss = [omega]
-
-    res_doss = linprog(c, A_ub=A_doss, b_ub=b_doss, bounds=bounds)
-    if res_doss.success:
-        P_list = res_doss.x
-        P_vpp = np.sum(P_list)
-        Q_vpp = P_vpp * tan_phi if np.isfinite(tan_phi) else 0
-        if np.abs(Q_vpp) < 100:
-            boundary_doss.append([P_vpp, Q_vpp])
-
-# === 可视化 ===
-boundary_doss = np.array(boundary_doss)
-boundary_no_doss = np.array(boundary_no_doss)
-
-plt.figure(figsize=(7, 7))
-plt.plot(boundary_no_doss[:, 0], boundary_no_doss[:, 1], 'g--', label='Without DOSS')
-plt.fill(boundary_no_doss[:, 0], boundary_no_doss[:, 1], color='lightgreen', alpha=0.3)
-
-plt.plot(boundary_doss[:, 0], boundary_doss[:, 1], 'b-', label='With Crisp DOSS')
-plt.fill(boundary_doss[:, 0], boundary_doss[:, 1], color='lightblue', alpha=0.5)
-
-plt.xlabel(r'$P^{\mathrm{vpp}}$ (kW)')
-plt.ylabel(r'$Q^{\mathrm{vpp}}$ (kVar)')
-plt.title('Flexibility Region: With vs Without DOSS')
-plt.grid(True)
-plt.axis('equal')
-plt.legend()
-plt.show()
+# --- 4. 输出与绘图 ---
+if results:
+    print("\n--- 24小时聚合结果 ---")
+    print(f"最大安全上调容量 (kW): \n{results['net_inj_max']}")
+    print(f"最大安全下调容量 (kW): \n{results['net_abs_max']}")
+    
+    # 调用类的绘图方法
+    aggregator.plot_results(results, T)
