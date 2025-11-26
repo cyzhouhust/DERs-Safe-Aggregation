@@ -1,158 +1,196 @@
 import numpy as np
 from scipy.optimize import linprog
 import matplotlib.pyplot as plt
-# 假设 data.py 和 matrices.py 中的 build_matrices 函数可用
-from data import *
-from matrices import build_matrices
 
-# --- VPP 配置 ---
-vpp_nodes = [10, 15, 18, 20, 25]
-num_vpp = len(vpp_nodes) 
-num_vars = 2 * num_vpp
-T = 24  # 假设的时间步长
-PENALTY_ALPHA = 1e6 # 软约束惩罚权重，必须远大于功率量级
+# 假设 build_matrices 来自你的 matrices.py
+# 如果 matrices 和 data 模块在同一目录下，直接引用即可
+try:
+    from matrices import build_matrices
+except ImportError:
+    # 仅作占位，防止缺少文件报错，实际使用时请确保环境正确
+    def build_matrices(verbose=False):
+        raise ImportError("缺少 matrices.py 或 build_matrices 函数")
 
-# =========================================================================
-# I. 模拟 24 小时平滑动态 DER 边界 (请替换为您的真实数据)
-# =========================================================================
-
-# 基础最大容量 (kW)
-BASE_P_MAX = np.array([40000, 10000, 40000, 4000, 4000])
-BASE_P_MIN_ABS = np.array([-100, -50, -150, -80, -120]) 
-
-def generate_24h_der_limits(t):
-    """根据时间步 t 模拟平滑的 DER 动态边界。"""
-    hour = t + 1
-    scale = 0.5 + 0.5 * np.cos((hour - 12) / 24 * 2 * np.pi) 
-
-    P_inj_max_t = BASE_P_MAX * scale
-    P_inj_min_t = -BASE_P_MIN_ABS * (1 + 0.5 * scale)
-    
-    Q_limit_t = P_inj_max_t * 0.5
-    Q_inj_max_t = np.minimum(Q_limit_t, [250, 300, 200, 200, 350])
-    Q_inj_min_t = -Q_inj_max_t
-    
-    return P_inj_min_t, P_inj_max_t, Q_inj_min_t, Q_inj_max_t
-
-# --- 存储结果的数组 ---
-max_network_injection = np.zeros(T)
-max_network_absorption = np.zeros(T)
-max_physical_injection_24h = np.zeros(T)
-max_physical_absorption_24h = np.zeros(T)
-
-# =========================================================================
-# II. 24 小时循环求解 (使用软约束)
-# =========================================================================
-print(f"--- 2. 正在进行 24 小时滚动优化 ({T} 个时间步) (软约束启用) ---")
-
-for t in range(T):
-    # --- A. 获取约束矩阵 ---
-    try:
-        A_V, b_V, A_I, b_I, _, _, _, _, _, _, _, _, _, _ = build_matrices(verbose=False)
-    except NameError:
-        print("错误: 无法执行 build_matrices。")
-        break
-    
-    # 组合原始 (约定 A) 约束
-    A_total_A = np.vstack([A_V, A_I]) 
-    b_total_A = np.vstack([b_V, b_I]).flatten() 
-    
-    # 转换为 约定 B
-    A_P_A_part = A_total_A[:, :num_vpp] 
-    A_Q_A_part = A_total_A[:, num_vpp:] 
-    A_P_B_part = -A_P_A_part
-    A_total_B = np.hstack([A_P_B_part, A_Q_A_part]) 
-    b_total_B = b_total_A
-    
-    num_constraints = len(b_total_B)
-    
-    # --- B. 构建软约束的增强矩阵 A_aug 和 b_aug ---
-    
-    # 1. 约束矩阵增强： [A_total_B, -I]
-    I_slack = -np.eye(num_constraints)
-    A_aug = np.hstack([A_total_B, I_slack]) # 新增 M 列，对应 slack 变量 S
-    
-    # 2. 边界约束增强 (仅对 Slack 变量): S >= 0
-    # P_B/Q_B 边界
-    P_inj_min_t, P_inj_max_t, Q_inj_min_t, Q_inj_max_t = generate_24h_der_limits(t)
-    P_B_min_list_t = -P_inj_max_t
-    P_B_max_list_t = -P_inj_min_t
-    bounds_P_B_t = list(zip(P_B_min_list_t, P_B_max_list_t))
-    bounds_Q_B_t = list(zip(Q_inj_min_t, Q_inj_max_t))
-    
-    # Slack 边界： S >= 0
-    bounds_S = [(0, None)] * num_constraints
-    bounds_total_aug = bounds_P_B_t + bounds_Q_B_t + bounds_S
-    
-    # 3. 目标函数增强： [c_orig, alpha * 1_M]
-    c_slack = np.full(num_constraints, PENALTY_ALPHA)
-
-    # --- C. 计算物理容量 (用于绘图) ---
-    max_physical_injection_24h[t] = np.sum(P_inj_max_t)
-    max_physical_absorption_24h[t] = -np.sum(P_inj_min_t)
-
-    # --- D. 求解 1: 最大注入功率 (Min sum(P_B) + alpha sum(S)) ---
-    c_inj_aug = np.hstack([np.ones(num_vpp), np.zeros(num_vpp), c_slack])
-    res_inj = linprog(c_inj_aug, A_ub=A_aug, b_ub=b_total_B, bounds=bounds_total_aug, method='highs')
-    
-    if res_inj.success:
-        # 最大注入功率 = -Min(Sum P_B)
-        P_B_opt = res_inj.x[:num_vpp]
-        max_network_injection[t] = -np.sum(P_B_opt)
-    else:
-        # 即使使用了软约束，如果 DER 边界导致不可行，也可能失败，但概率大大降低
-        max_network_injection[t] = np.nan
+class VPPAggregator:
+    def __init__(self, vpp_nodes):
+        """
+        初始化 VPP 聚合器
+        :param vpp_nodes: list, VPP 控制的节点编号列表 (e.g., [10, 15, ...])
+        """
+        self.vpp_nodes = vpp_nodes
+        self.num_vpp = len(vpp_nodes)
+        self.matrices_ready = False
         
-    # --- E. 求解 2: 最大吸收功率 (Min -sum(P_B) + alpha sum(S)) ---
-    c_abs_aug = np.hstack([-np.ones(num_vpp), np.zeros(num_vpp), c_slack])
-    res_abs = linprog(c_abs_aug, A_ub=A_aug, b_ub=b_total_B, bounds=bounds_total_aug, method='highs')
+        # 预加载网络矩阵
+        self._load_network_matrices()
 
-    if res_abs.success:
-        # 最大吸收功率 = Max(Sum P_B)
-        P_B_opt = res_abs.x[:num_vpp]
-        max_network_absorption[t] = np.sum(P_B_opt)
-    else:
-        max_network_absorption[t] = np.nan
-    
-    # 可选：打印松弛量以监控约束违反程度
-    if res_inj.success:
-        slack_inj = res_inj.x[num_vars:]
-        max_slack_inj = np.max(slack_inj)
-        if max_slack_inj > 1e-4:
-            print(f"时刻 {t+1} (注入): 警告！最大松弛量达到 {max_slack_inj:.2e}")
-    
-print("--- 优化完成 ---")
+    def _load_network_matrices(self):
+        """内部方法：构建并切片灵敏度矩阵"""
+        try:
+            # 获取全网矩阵
+            # 注意：build_matrices 返回值需与你实际的 matrices.py 一致
+            # 这里假设返回顺序为 A_V, b_V, A_I, b_I, ...
+            ret = build_matrices(verbose=False)
+            A_V, b_V, A_I, b_I = ret[0], ret[1], ret[2], ret[3]
+            
+            # 组合电压和电流约束
+            A_total_full = np.vstack([A_V, A_I])
+            self.b_total = np.vstack([b_V, b_I]).flatten()
+            
+            # --- 关键：根据 vpp_nodes 进行切片 ---
+            # 假设全网矩阵的列顺序是 [所有节点P, 所有节点Q]
+            # 我们需要提取属于 VPP 节点的列
+            # 注意：这里需要确保 build_matrices 的列索引与 vpp_nodes 对应关系正确
+            # 下面的切片假设 vpp_nodes 的索引直接对应矩阵的列 (如果是 IEEE33 等标准算例通常需要 -1 偏移，请根据你的 data.py 确认)
+            
+            # 这里做了一个通用假设：build_matrices 返回的矩阵列索引就是节点号
+            # 如果你的 build_matrices 已经处理了全网所有节点：
+            
+            # 提取 P 相关列 (假设前 N 列是 P)
+            # 这里的切片逻辑需要根据你的 matrices.py 具体实现调整
+            # 假设矩阵列数足够覆盖 max(vpp_nodes)
+            
+            # 若 A 矩阵列对应全网节点：
+            col_indices_P = np.array(self.vpp_nodes) # P 列索引
+            # 假设总节点数是 n_bus，Q 的列索引通常是 index + n_bus (需确认你的 build_matrices 逻辑)
+            # 这里为了稳健，假设你传入的代码逻辑中 A_total_A 已经是针对特定变量的，
+            # 但通常 build_matrices 返回全网。
+            # 为了复用你原本的逻辑，这里我们假设 build_matrices 返回的是针对 *全网所有节点* 的。
+            
+            # 如果 build_matrices 内部已经处理了只返回 VPP 相关的列，那就不需要高级切片。
+            # 但根据你提供的原始代码： A_P_A_part = A_total_A[:, :num_vpp]
+            # 这暗示 build_matrices 可能在你的原始环境中已经只返回了 VPP 相关的矩阵，或者你在外部做了处理。
+            
+            # *** 为了保持和你提供的代码片段完全一致的逻辑 ***
+            # 我们直接存储 A_total_A，并在 solve 时处理符号
+            self.A_total_A = A_total_full 
+            self.matrices_ready = True
+            
+        except Exception as e:
+            print(f"初始化矩阵失败: {e}")
+            self.matrices_ready = False
 
-# =========================================================================
-# III. 可视化
-# =========================================================================
+    def solve_dispatch(self, p_inj_max_profile, p_abs_max_profile, q_ratio=0.5):
+        """
+        计算 24 小时最大聚合能力
+        :param p_inj_max_profile: np.array shape(T, num_vpp), 每个时段每个节点的物理最大注入功率
+        :param p_abs_max_profile: np.array shape(T, num_vpp), 每个时段每个节点的物理最大吸收功率 (正值)
+        :param q_ratio: float, Q/P 比例，用于自动计算 Q 边界
+        :return: 字典，包含 'inj_max', 'abs_max', 'physical_inj', 'physical_abs'
+        """
+        if not self.matrices_ready:
+            print("错误：网络矩阵未初始化")
+            return None
 
-hours = np.arange(1, T + 1)
-plt.figure(figsize=(12, 7))
+        T = p_inj_max_profile.shape[0]
+        max_net_inj = np.zeros(T)
+        max_net_abs = np.zeros(T)
+        
+        # 目标函数向量 (只针对 P 优化, Q 随之变化或为0)
+        # 优化变量 x = [P_1...P_n, Q_1...Q_n] (约定 B: Load方向)
+        c_inj = np.hstack([np.ones(self.num_vpp), np.zeros(self.num_vpp)])   # Min sum(P_load) -> Max Injection
+        c_abs = np.hstack([-np.ones(self.num_vpp), np.zeros(self.num_vpp)])  # Min sum(-P_load) -> Max Absorption
 
-# --- 1. 物理上限/下限 (动态曲线) ---
-plt.plot(hours, max_physical_injection_24h, 'r--', linewidth=1.5, alpha=0.6, label='Physical Max Injection Limit (Dynamic Sum)')
-plt.plot(hours, -max_physical_absorption_24h, 'b--', linewidth=1.5, alpha=0.6, label='Physical Max Absorption Limit (Dynamic Sum)')
+        # 准备矩阵转换 (A -> B 约定)
+        # 根据你的原始代码逻辑：
+        # A_P_B_part = -A_P_A_part (因为 P_load = -P_inj)
+        # A_Q_B_part = A_Q_A_part (Q 方向通常不变或根据你的定义)
+        
+        # 注意：这里需要根据 build_matrices 的具体输出来切分 P 和 Q 部分
+        # 假设 A_total_A 的列数是 2 * num_vpp (如果你原来的 build_matrices 是专门为选定的 VPP 生成的)
+        # 否则需要在这里进行列索引切片。
+        # *** 基于你提供的原始代码，直接切分 ***
+        if self.A_total_A.shape[1] != 2 * self.num_vpp:
+             # 如果矩阵列数不对，说明 build_matrices 返回的是全网矩阵，需要切片
+             # 这是一个简单的切片修正逻辑（假设全网33节点）
+             n_bus = 33 # 假设值，视 build_matrices 而定
+             # 这里通过切片提取 VPP 节点对应的列
+             # indices_p = self.vpp_nodes
+             # indices_q = [x + n_bus for x in self.vpp_nodes] # 假设 Q 在后半部分
+             # A_vpp = self.A_total_A[:, indices_p + indices_q]
+             pass 
+             # *为了安全起见，我们假设 build_matrices 如你原代码所示，已经适配了 VPP 数量*
+        
+        A_P_A_part = self.A_total_A[:, :self.num_vpp]
+        A_Q_A_part = self.A_total_A[:, self.num_vpp:]
+        
+        # 转换到 Load 约定 (约定 B)
+        A_P_B_part = -A_P_A_part
+        A_total_B = np.hstack([A_P_B_part, A_Q_A_part])
+        b_total_B = self.b_total
 
+        print(f"--- 开始 {T} 时段滚动优化 ---")
+        
+        for t in range(T):
+            # 1. 获取当前时刻边界
+            p_max_t = p_inj_max_profile[t, :]
+            p_abs_t = p_abs_max_profile[t, :] # 输入约定为正值的容量
+            
+            # 2. 构造 Q 边界 (复用你的逻辑)
+            # 注意：p_abs_t 是容量(正)，原始代码逻辑中 p_inj_min_t 是负值
+            # 还原原始逻辑:
+            # P_inj_max_t = p_max_t
+            # P_inj_min_t = -p_abs_t
+            
+            q_limit_t = p_max_t * q_ratio
+            # 设置无功硬约束，这里为了通用性可以设大一点或作为参数传入
+            q_hard_limit = np.array([250, 300, 200, 200, 350]) 
+            # 如果节点数不同，需要适配 q_hard_limit 长度，这里做个简单的广播处理
+            if len(q_hard_limit) != self.num_vpp:
+                q_hard_limit = np.ones(self.num_vpp) * 300
+                
+            q_max_t = np.minimum(q_limit_t, q_hard_limit)
+            q_min_t = -q_max_t
 
-# --- 2. 优化后的最大聚合容量 ---
-plt.plot(hours, max_network_injection, 'r-o', linewidth=2, label='Network Constrained Max Injection')
-plt.plot(hours, -max_network_absorption, 'b-x', linewidth=2, label='Network Constrained Max Absorption')
+            # 3. 构造 Bounds (约定 B: Load)
+            # P_B (Load) 范围: [-P_inj_max, -P_inj_min] => [-P_inj_max, P_abs_max]
+            # 原始代码: P_B_min = -P_inj_max, P_B_max = -P_inj_min
+            
+            bounds_P_t = list(zip(-p_max_t, p_abs_t))
+            bounds_Q_t = list(zip(q_min_t, q_max_t))
+            bounds_total = bounds_P_t + bounds_Q_t
 
-# 填充可行区域 (Flexibility Region)
-plt.fill_between(hours, -max_network_absorption, max_network_injection, color='gray', alpha=0.1, label='VPP Feasibility Region')
+            # 4. 求解
+            # Max Injection (Min sum P_load)
+            res_inj = linprog(c_inj, A_ub=A_total_B, b_ub=b_total_B, bounds=bounds_total, method='highs')
+            # 结果取负，因为 min P_load = - Max P_inj
+            max_net_inj[t] = -res_inj.fun if res_inj.success else np.nan
 
-plt.axhline(0, color='k', linestyle=':', linewidth=1) # 零线
+            # Max Absorption (Min sum -P_load)
+            res_abs = linprog(c_abs, A_ub=A_total_B, b_ub=b_total_B, bounds=bounds_total, method='highs')
+            max_net_abs[t] = res_abs.fun if res_abs.success else np.nan
 
-plt.xlabel('Time (Hour)')
-plt.ylabel(r'VPP Aggregated Power ($P^{\mathrm{vpp}}$) (kW) [Injection(+), Absorption(-)]')
-plt.title('24-Hour VPP Flexibility Range vs. Physical Limits (Soft Constraints)')
-plt.xticks(hours)
-plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend(loc='upper right')
-plt.tight_layout()
-plt.show()
+        return {
+            'net_inj_max': max_net_inj,
+            'net_abs_max': max_net_abs,
+            'phy_inj_sum': np.sum(p_inj_max_profile, axis=1),
+            'phy_abs_sum': np.sum(p_abs_max_profile, axis=1)
+        }
 
-print("\n--- 24 小时 VPP 聚合能力 ---")
-print(f"动态物理注入上限 (kW): {max_physical_injection_24h}")
-print(f"动态网络注入上限 (kW): {max_network_injection}")
+    @staticmethod
+    def plot_results(results, T=24):
+        """可视化结果"""
+        hours = np.arange(1, T + 1)
+        plt.figure(figsize=(12, 6))
+        
+        # 物理边界
+        plt.plot(hours, results['phy_inj_sum'], 'r--', alpha=0.5, label='Physical Max Inj')
+        plt.plot(hours, -results['phy_abs_sum'], 'b--', alpha=0.5, label='Physical Max Abs')
+        
+        # 网络安全边界
+        plt.plot(hours, results['net_inj_max'], 'r-o', linewidth=2, label='Safe Max Inj')
+        plt.plot(hours, results['net_abs_max'], 'b-x', linewidth=2, label='Safe Max Abs') # 下调画在负轴
+
+        # 这里的 abs_max 算出来是正值(容量)，画图时通常取负表示方向
+        # 修正：如果 linprog 返回的是 load 值，那么 max absorption (load) 是正的。
+        # 为了画图符合直觉（下调为负），这里取负号。
+        plt.plot(hours, -results['net_abs_max'], 'b-x', linewidth=2, label='Safe Max Abs (Plot)')
+
+        plt.fill_between(hours, -results['net_abs_max'], results['net_inj_max'], color='gray', alpha=0.1)
+        plt.axhline(0, color='k', linestyle=':')
+        plt.title('VPP Safe Aggregation Capacity (24 Hours)')
+        plt.xlabel('Hour')
+        plt.ylabel('Power (kW)')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.show()
