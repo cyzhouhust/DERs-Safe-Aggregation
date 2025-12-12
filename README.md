@@ -30,11 +30,12 @@
   展示如何准备数据并调用上面的类，将监测的负荷数据节点位置，上调和下调容量读取，调用这个类进行计算，得到安全汇聚可调范围
 ---
 - **agg5.py**  新增
-单时间点聚合上下限和贡献度，这里默认了节点10和15是同一类资源
-        当前时间点(可默认)'time': t_snapshot,
-        单时刻容量'capacity': {'up': total_inj_capacity, 'down': total_abs_capacity},
-        'up_contribution': inj_contrib,
-        'down_contribution': abs_contrib
+单时间点聚合上下限和贡献度，这里默认了节点10和15是同一类资源，每类资源数量count
+  单时刻容量理论容量：th_val
+  单时刻容量理论容量：actual_val
+  每类资源上调贡献量: contrib_inj,
+  每类资源下调贡献量: contrib_abs
+  每类资源占比 :ratio
 
 
 
