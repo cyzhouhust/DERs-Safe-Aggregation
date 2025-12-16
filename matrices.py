@@ -1,5 +1,5 @@
 import numpy as np
-from data import *
+from data import bus_Pd, bus_Qd, branch_r, branch_x,branch_data
 from itertools import chain
 
 

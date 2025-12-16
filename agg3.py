@@ -49,6 +49,7 @@ print(f"--- 2. 正在进行 24 小时滚动优化 ({T} 个时间步) ---")
 for t in range(T):
     # --- A. 获取当前时刻的动态 DER 边界 ---
     P_inj_min_t, P_inj_max_t, Q_inj_min_t, Q_inj_max_t = generate_24h_der_limits(t)
+    Q_inj_min_t, Q_inj_max_t=np.zeros_like(Q_inj_min_t),np.zeros_like(Q_inj_max_t)
     # --- B. 计算当前时刻的物理容量 ---
     max_physical_injection_24h[t] = np.sum(P_inj_max_t)
     max_physical_absorption_24h[t] = -np.sum(P_inj_min_t)
