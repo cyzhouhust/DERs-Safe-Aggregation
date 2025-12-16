@@ -1,0 +1,815 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DERs Safe Aggregation API",
+    "description": "分布式能源资源安全聚合优化计算 REST API\n\n提供分布式能源资源（DERs）的安全聚合优化计算服务，包括：\n- 约束矩阵构建\n- VPP聚合器初始化\n- 多时间步聚合优化计算\n- 单时间步聚合能力计算\n- 缓存管理",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5123",
+      "description": "本地开发服务器"
+    }
+  ],
+  "paths": {
+    "/xxaqy-api/health": {
+      "get": {
+        "tags": ["健康检查"],
+        "summary": "健康检查",
+        "description": "检查API服务是否正常运行",
+        "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "服务正常运行",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthCheckResponse"
+                },
+                "example": {
+                  "status": "healthy",
+                  "message": "DERs Safe Aggregation API is running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/matrices/build": {
+      "post": {
+        "tags": ["约束矩阵"],
+        "summary": "构建约束矩阵",
+        "description": "构建电力网络约束矩阵，包括电压约束、电流约束等",
+        "operationId": "buildMatrices",
+        "requestBody": {
+          "description": "构建矩阵的请求参数",
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildMatricesRequest"
+              },
+              "example": {
+                "verbose": false,
+                "vpp_nodes": [10, 15, 18, 20, 25]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "矩阵构建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildMatricesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/aggregator/init": {
+      "post": {
+        "tags": ["聚合器"],
+        "summary": "初始化聚合器",
+        "description": "初始化VPP聚合器实例，用于后续的聚合优化计算",
+        "operationId": "initAggregator",
+        "requestBody": {
+          "description": "初始化聚合器的请求参数",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitAggregatorRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "聚合器初始化成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitAggregatorResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Aggregator initialized successfully",
+                  "vpp_nodes": [10, 15, 18, 20, 25],
+                  "cache_key": "10,15,18,20,25"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/aggregator/solve": {
+      "post": {
+        "tags": ["聚合器"],
+        "summary": "执行聚合优化计算（多时间步）",
+        "description": "执行多时间步的聚合优化计算，返回每个时间步的聚合能力",
+        "operationId": "solveDispatch",
+        "requestBody": {
+          "description": "聚合优化计算的请求参数",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SolveDispatchRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25],
+                "p_inj_max_profile": [
+                  [40000, 10000, 40000, 4000, 4000],
+                  [38000, 9500, 38000, 3800, 3800]
+                ],
+                "p_abs_max_profile": [
+                  [1000, 1000, 1000, 1000, 1000],
+                  [1100, 1100, 1100, 1100, 1100]
+                ],
+                "q_ratio": 0.5,
+                "use_cache": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "计算成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolveDispatchResponse"
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "net_inj_max": [85000.5, 82000.3],
+                    "net_abs_max": [4500.2, 4800.1],
+                    "phy_inj_sum": [90000.0, 87000.0],
+                    "phy_abs_sum": [5000.0, 5500.0]
+                  },
+                  "metadata": {
+                    "vpp_nodes": [10, 15, 18, 20, 25],
+                    "num_time_steps": 24,
+                    "num_vpp_nodes": 5,
+                    "q_ratio": 0.5
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/aggregator/solve/single": {
+      "post": {
+        "tags": ["聚合器"],
+        "summary": "计算单个时间步的聚合能力",
+        "description": "计算单个时间步的聚合能力，返回当前时刻的聚合结果",
+        "operationId": "solveSingle",
+        "requestBody": {
+          "description": "单时间步计算的请求参数",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SolveSingleRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25],
+                "p_inj_max": [40000, 10000, 40000, 4000, 4000],
+                "p_abs_max": [1000, 1000, 1000, 1000, 1000],
+                "q_ratio": 0.5
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "计算成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolveSingleResponse"
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "net_inj_max": 85000.5,
+                    "net_abs_max": 4500.2,
+                    "phy_inj_sum": 90000.0,
+                    "phy_abs_sum": 5000.0
+                  },
+                  "metadata": {
+                    "vpp_nodes": [10, 15, 18, 20, 25],
+                    "q_ratio": 0.5
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/aggregator/clear_cache": {
+      "post": {
+        "tags": ["聚合器"],
+        "summary": "清除聚合器缓存",
+        "description": "清除所有缓存的聚合器实例",
+        "operationId": "clearCache",
+        "responses": {
+          "200": {
+            "description": "缓存清除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClearCacheResponse"
+                },
+                "example": {
+                  "success": true,
+                  "message": "Cleared 3 cached aggregator(s)"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthCheckResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "服务状态",
+            "example": "healthy"
+          },
+          "message": {
+            "type": "string",
+            "description": "状态消息",
+            "example": "DERs Safe Aggregation API is running"
+          }
+        },
+        "required": ["status", "message"]
+      },
+      "BuildMatricesRequest": {
+        "type": "object",
+        "properties": {
+          "verbose": {
+            "type": "boolean",
+            "description": "是否输出详细信息",
+            "default": false
+          },
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表（可选）",
+            "example": [10, 15, 18, 20, 25]
+          }
+        }
+      },
+      "BuildMatricesResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "A_V": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电压约束矩阵A_V"
+              },
+              "b_V": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电压约束向量b_V"
+              },
+              "A_I": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电流约束矩阵A_I"
+              },
+              "b_I": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电流约束向量b_I"
+              },
+              "R_hat": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "等效电阻矩阵R_hat"
+              },
+              "X_hat": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "等效电抗矩阵X_hat"
+              },
+              "R_I": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电流约束电阻矩阵R_I"
+              },
+              "X_I": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "电流约束电抗矩阵X_I"
+              },
+              "Pd": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "有功负荷向量Pd"
+              },
+              "Qd": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "无功负荷向量Qd"
+              },
+              "C_MI_load_neg": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "负荷负向电流约束系数"
+              },
+              "C_MI_load_pos": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "负荷正向电流约束系数"
+              },
+              "C_mV_load": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "负荷最小电压约束系数"
+              },
+              "C_MV_load": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "负荷最大电压约束系数"
+              },
+              "shapes": {
+                "type": "object",
+                "description": "各矩阵的形状信息",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "required": ["A_V", "b_V", "A_I", "b_I", "R_hat", "X_hat", "R_I", "X_I", "Pd", "Qd", "C_MI_load_neg", "C_MI_load_pos", "C_mV_load", "C_MV_load", "shapes"]
+          },
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表"
+          }
+        },
+        "required": ["success", "data"]
+      },
+      "InitAggregatorRequest": {
+        "type": "object",
+        "required": ["vpp_nodes"],
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "minItems": 1,
+            "example": [10, 15, 18, 20, 25]
+          }
+        }
+      },
+      "InitAggregatorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "message": {
+            "type": "string",
+            "description": "响应消息"
+          },
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表"
+          },
+          "cache_key": {
+            "type": "string",
+            "description": "缓存键"
+          }
+        },
+        "required": ["success", "message", "vpp_nodes", "cache_key"]
+      },
+      "SolveDispatchRequest": {
+        "type": "object",
+        "required": ["vpp_nodes", "p_inj_max_profile", "p_abs_max_profile"],
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "example": [10, 15, 18, 20, 25]
+          },
+          "p_inj_max_profile": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "description": "多时间步最大注入功率矩阵，形状为 T x num_vpp，单位：kW",
+            "example": [[40000, 10000, 40000, 4000, 4000], [38000, 9500, 38000, 3800, 3800]]
+          },
+          "p_abs_max_profile": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "description": "多时间步最大吸收功率矩阵，形状为 T x num_vpp，单位：kW（正值）",
+            "example": [[1000, 1000, 1000, 1000, 1000], [1100, 1100, 1100, 1100, 1100]]
+          },
+          "q_ratio": {
+            "type": "number",
+            "description": "无功功率比例，默认0.5",
+            "default": 0.5,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "use_cache": {
+            "type": "boolean",
+            "description": "是否使用缓存的聚合器实例，默认true",
+            "default": true
+          }
+        }
+      },
+      "SolveDispatchResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "net_inj_max": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "各时间步的最大安全注入功率，单位：kW"
+              },
+              "net_abs_max": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "各时间步的最大安全吸收功率，单位：kW"
+              },
+              "phy_inj_sum": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "各时间步的物理注入功率总和，单位：kW"
+              },
+              "phy_abs_sum": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "各时间步的物理吸收功率总和，单位：kW"
+              }
+            },
+            "required": ["net_inj_max", "net_abs_max", "phy_inj_sum", "phy_abs_sum"]
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "vpp_nodes": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "VPP节点列表"
+              },
+              "num_time_steps": {
+                "type": "integer",
+                "description": "时间步数量"
+              },
+              "num_vpp_nodes": {
+                "type": "integer",
+                "description": "VPP节点数量"
+              },
+              "q_ratio": {
+                "type": "number",
+                "description": "无功功率比例"
+              }
+            },
+            "required": ["vpp_nodes", "num_time_steps", "num_vpp_nodes", "q_ratio"]
+          }
+        },
+        "required": ["success", "data", "metadata"]
+      },
+      "SolveSingleRequest": {
+        "type": "object",
+        "required": ["vpp_nodes", "p_inj_max", "p_abs_max"],
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "example": [10, 15, 18, 20, 25]
+          },
+          "p_inj_max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "当前时刻各节点最大注入功率，单位：kW",
+            "example": [40000, 10000, 40000, 4000, 4000]
+          },
+          "p_abs_max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "当前时刻各节点最大吸收功率（正值），单位：kW",
+            "example": [1000, 1000, 1000, 1000, 1000]
+          },
+          "q_ratio": {
+            "type": "number",
+            "description": "无功功率比例，默认0.5",
+            "default": 0.5,
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "SolveSingleResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "net_inj_max": {
+                "type": "number",
+                "description": "最大安全注入功率，单位：kW"
+              },
+              "net_abs_max": {
+                "type": "number",
+                "description": "最大安全吸收功率，单位：kW"
+              },
+              "phy_inj_sum": {
+                "type": "number",
+                "description": "物理注入功率总和，单位：kW"
+              },
+              "phy_abs_sum": {
+                "type": "number",
+                "description": "物理吸收功率总和，单位：kW"
+              }
+            },
+            "required": ["net_inj_max", "net_abs_max", "phy_inj_sum", "phy_abs_sum"]
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "vpp_nodes": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "VPP节点列表"
+              },
+              "q_ratio": {
+                "type": "number",
+                "description": "无功功率比例"
+              }
+            },
+            "required": ["vpp_nodes", "q_ratio"]
+          }
+        },
+        "required": ["success", "data", "metadata"]
+      },
+      "ClearCacheResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "message": {
+            "type": "string",
+            "description": "响应消息"
+          }
+        },
+        "required": ["success", "message"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功，错误时为false"
+          },
+          "error": {
+            "type": "string",
+            "description": "错误描述"
+          },
+          "traceback": {
+            "type": "string",
+            "description": "详细堆栈信息（仅在开发模式）",
+            "nullable": true
+          }
+        },
+        "required": ["success", "error"]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "健康检查",
+      "description": "API健康状态检查"
+    },
+    {
+      "name": "约束矩阵",
+      "description": "电力网络约束矩阵构建"
+    },
+    {
+      "name": "聚合器",
+      "description": "VPP聚合器管理和聚合优化计算"
+    }
+  ]
+}
+
