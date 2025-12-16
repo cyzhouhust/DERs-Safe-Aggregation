@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "DERs Safe Aggregation API",
-    "description": "分布式能源资源安全聚合优化计算 REST API\n\n提供分布式能源资源（DERs）的安全聚合优化计算服务，包括：\n- 约束矩阵构建\n- VPP聚合器初始化\n- 多时间步聚合优化计算\n- 单时间步聚合能力计算\n- 缓存管理",
-    "version": "1.0.0",
+    "description": "分布式能源资源安全聚合优化计算 REST API\n\n提供分布式能源资源（DERs）的安全聚合优化计算服务，包括：\n- 约束矩阵构建\n- VPP聚合器初始化（agg4算法）\n- 多时间步聚合优化计算（agg4算法）\n- 单时间步聚合能力计算（agg4算法）\n- 快照时间容量计算（agg5算法）\n- 缓存管理",
+    "version": "2.0.0",
     "contact": {
       "name": "API Support"
     }
@@ -15,10 +15,170 @@
     }
   ],
   "paths": {
-    "/xxaqy-api/health": {
+    "/xxaqy-api/agg1/optimize/basic": {
+      "post": {
+        "tags": ["优化计算 (agg1)"],
+        "summary": "基础线性规划优化（agg1）",
+        "description": "计算单个时刻的最大VPP总有功输出",
+        "operationId": "optimizeBasic",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Agg1OptimizeRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25],
+                "p_min_list": [-100, -600, -40000, -50000, -5000],
+                "p_max_list": [0, 0, 4000, 4000, 2000],
+                "q_min_list": [0, 0, 0, 0, 0],
+                "q_max_list": [0, 0, 0, 0, 0]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "优化成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agg1OptimizeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/agg2/optimize/injection-absorption": {
+      "post": {
+        "tags": ["优化计算 (agg2)"],
+        "summary": "计算最大注入和最大吸收功率（agg2）",
+        "description": "使用约定B（吸收为正）计算最大注入功率",
+        "operationId": "optimizeInjectionAbsorption",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Agg2OptimizeRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25],
+                "p_inj_min_list": [0, 0, 0, 0, 0],
+                "p_inj_max_list": [40000, 10000, 40000, 4000, 4000],
+                "q_inj_min_list": [-250, -300, -200, -200, -350],
+                "q_inj_max_list": [250, 300, 200, 200, 350]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "优化成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agg2OptimizeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/agg3/optimize/24h-rolling": {
+      "post": {
+        "tags": ["优化计算 (agg3)"],
+        "summary": "24小时滚动优化（agg3）",
+        "description": "计算动态边界下24小时的注入和吸收能力",
+        "operationId": "optimize24hRolling",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Agg3OptimizeRequest"
+              },
+              "example": {
+                "vpp_nodes": [10, 15, 18, 20, 25],
+                "base_p_max": [40000, 10000, 40000, 4000, 4000],
+                "base_p_min_abs": [1000, 1000, 1000, 1000, 1000],
+                "time_steps": 24
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "优化成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agg3OptimizeResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/agg4/health": {
       "get": {
         "tags": ["健康检查"],
-        "summary": "健康检查",
+        "summary": "健康检查（agg4）",
         "description": "检查API服务是否正常运行",
         "operationId": "healthCheck",
         "responses": {
@@ -31,7 +191,7 @@
                 },
                 "example": {
                   "status": "healthy",
-                  "message": "DERs Safe Aggregation API is running"
+                  "message": "DERs Safe Aggregation API (agg4) is running"
                 }
               }
             }
@@ -39,10 +199,10 @@
         }
       }
     },
-    "/xxaqy-api/matrices/build": {
+    "/xxaqy-api/agg4/matrices/build": {
       "post": {
-        "tags": ["约束矩阵"],
-        "summary": "构建约束矩阵",
+        "tags": ["约束矩阵 (agg4)"],
+        "summary": "构建约束矩阵（agg4）",
         "description": "构建电力网络约束矩阵，包括电压约束、电流约束等",
         "operationId": "buildMatrices",
         "requestBody": {
@@ -84,10 +244,10 @@
         }
       }
     },
-    "/xxaqy-api/aggregator/init": {
+    "/xxaqy-api/agg4/aggregator/init": {
       "post": {
-        "tags": ["聚合器"],
-        "summary": "初始化聚合器",
+        "tags": ["聚合器 (agg4)"],
+        "summary": "初始化聚合器（agg4）",
         "description": "初始化VPP聚合器实例，用于后续的聚合优化计算",
         "operationId": "initAggregator",
         "requestBody": {
@@ -144,10 +304,10 @@
         }
       }
     },
-    "/xxaqy-api/aggregator/solve": {
+    "/xxaqy-api/agg4/aggregator/solve": {
       "post": {
-        "tags": ["聚合器"],
-        "summary": "执行聚合优化计算（多时间步）",
+        "tags": ["聚合器 (agg4)"],
+        "summary": "执行聚合优化计算（多时间步，agg4）",
         "description": "执行多时间步的聚合优化计算，返回每个时间步的聚合能力",
         "operationId": "solveDispatch",
         "requestBody": {
@@ -223,10 +383,10 @@
         }
       }
     },
-    "/xxaqy-api/aggregator/solve/single": {
+    "/xxaqy-api/agg4/aggregator/solve/single": {
       "post": {
-        "tags": ["聚合器"],
-        "summary": "计算单个时间步的聚合能力",
+        "tags": ["聚合器 (agg4)"],
+        "summary": "计算单个时间步的聚合能力（agg4）",
         "description": "计算单个时间步的聚合能力，返回当前时刻的聚合结果",
         "operationId": "solveSingle",
         "requestBody": {
@@ -293,10 +453,10 @@
         }
       }
     },
-    "/xxaqy-api/aggregator/clear_cache": {
+    "/xxaqy-api/agg4/aggregator/clear_cache": {
       "post": {
-        "tags": ["聚合器"],
-        "summary": "清除聚合器缓存",
+        "tags": ["聚合器 (agg4)"],
+        "summary": "清除聚合器缓存（agg4）",
         "description": "清除所有缓存的聚合器实例",
         "operationId": "clearCache",
         "responses": {
@@ -310,6 +470,82 @@
                 "example": {
                   "success": true,
                   "message": "Cleared 3 cached aggregator(s)"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器内部错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/xxaqy-api/agg5/capacity/snapshot": {
+      "post": {
+        "tags": ["容量计算 (agg5)"],
+        "summary": "计算快照时间点的资源容量（agg5）",
+        "description": "基于资源分组计算特定时间快照的上调/下调容量，包括理论容量和实际容量",
+        "operationId": "calculateSnapshotCapacity",
+        "requestBody": {
+          "description": "快照容量计算的请求参数",
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotCapacityRequest"
+              },
+              "example": {
+                "t_snapshot": 12
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "计算成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotCapacityResponse"
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "up_regulation": {
+                      "Total": {
+                        "Theoretical": 94000.0,
+                        "Actual": 75200.0
+                      },
+                      "Type_A (Node 10,15)": {
+                        "Count": 2,
+                        "Theoretical": 50000.0,
+                        "Actual": 40000.0,
+                        "Ratio": 53.19
+                      }
+                    },
+                    "down_regulation": {
+                      "Total": {
+                        "Theoretical": 5500.0,
+                        "Actual": 4400.0
+                      }
+                    }
+                  },
+                  "metadata": {
+                    "t_snapshot": 12,
+                    "resource_groups": {
+                      "Type_A (Node 10,15)": [0, 1],
+                      "Type_B (Node 18)": [2],
+                      "Type_C (Node 20)": [3],
+                      "Type_D (Node 25)": [4]
+                    }
+                  }
                 }
               }
             }
@@ -341,7 +577,7 @@
           "message": {
             "type": "string",
             "description": "状态消息",
-            "example": "DERs Safe Aggregation API is running"
+            "example": "DERs Safe Aggregation API (agg4) is running"
           }
         },
         "required": ["status", "message"]
@@ -794,6 +1030,397 @@
           }
         },
         "required": ["success", "error"]
+      },
+      "Agg1OptimizeRequest": {
+        "type": "object",
+        "required": ["p_min_list", "p_max_list"],
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "example": [10, 15, 18, 20, 25]
+          },
+          "p_min_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最小有功功率（kW）",
+            "example": [-100, -600, -40000, -50000, -5000]
+          },
+          "p_max_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最大有功功率（kW）",
+            "example": [0, 0, 4000, 4000, 2000]
+          },
+          "q_min_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最小无功功率（kVar）",
+            "example": [0, 0, 0, 0, 0]
+          },
+          "q_max_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最大无功功率（kVar）",
+            "example": [0, 0, 0, 0, 0]
+          }
+        }
+      },
+      "Agg1OptimizeResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "total_p_max": {
+                "type": "number",
+                "description": "最大VPP总有功输出（kW）"
+              },
+              "objective_value": {
+                "type": "number",
+                "description": "目标函数值"
+              },
+              "p_vpp_opt": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "最优有功功率调度方案（kW）"
+              },
+              "q_vpp_opt": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "最优无功功率调度方案（kVar）"
+              },
+              "slack": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "约束松弛变量"
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "vpp_nodes": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Agg2OptimizeRequest": {
+        "type": "object",
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "example": [10, 15, 18, 20, 25]
+          },
+          "p_inj_min_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最小注入功率（约定A，kW）",
+            "example": [0, 0, 0, 0, 0]
+          },
+          "p_inj_max_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最大注入功率（约定A，kW）",
+            "example": [40000, 10000, 40000, 4000, 4000]
+          },
+          "q_inj_min_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最小无功注入功率（kVar）",
+            "example": [-250, -300, -200, -200, -350]
+          },
+          "q_inj_max_list": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "各节点最大无功注入功率（kVar）",
+            "example": [250, 300, 200, 200, 350]
+          }
+        }
+      },
+      "Agg2OptimizeResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "max_injection": {
+                "type": "number",
+                "description": "最大注入功率（kW）"
+              },
+              "p_schedule": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "最优有功功率调度（kW）"
+              },
+              "q_schedule": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "最优无功功率调度（kVar）"
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "vpp_nodes": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "convention": {
+                "type": "string",
+                "description": "功率约定"
+              }
+            }
+          }
+        }
+      },
+      "Agg3OptimizeRequest": {
+        "type": "object",
+        "properties": {
+          "vpp_nodes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "VPP节点列表",
+            "example": [10, 15, 18, 20, 25]
+          },
+          "base_p_max": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "基准最大有功功率（kW）",
+            "example": [40000, 10000, 40000, 4000, 4000]
+          },
+          "base_p_min_abs": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "基准最小吸收功率（kW）",
+            "example": [1000, 1000, 1000, 1000, 1000]
+          },
+          "time_steps": {
+            "type": "integer",
+            "description": "时间步数",
+            "default": 24,
+            "example": 24
+          }
+        }
+      },
+      "Agg3OptimizeResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "max_network_injection": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "网络约束下的最大注入功率（kW）"
+              },
+              "max_network_absorption": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "网络约束下的最大吸收功率（kW）"
+              },
+              "max_physical_injection": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "物理最大注入功率（kW）"
+              },
+              "max_physical_absorption": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "物理最大吸收功率（kW）"
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "vpp_nodes": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "time_steps": {
+                "type": "integer"
+              },
+              "base_p_max": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "base_p_min_abs": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SnapshotCapacityRequest": {
+        "type": "object",
+        "properties": {
+          "t_snapshot": {
+            "type": "integer",
+            "description": "时间快照（小时，0-23）",
+            "default": 12,
+            "minimum": 0,
+            "maximum": 23,
+            "example": 12
+          }
+        }
+      },
+      "SnapshotCapacityResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否成功"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "up_regulation": {
+                "type": "object",
+                "description": "上调/注入容量数据",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "Count": {
+                      "type": "integer",
+                      "description": "资源数量"
+                    },
+                    "Theoretical": {
+                      "type": "number",
+                      "description": "理论容量（kW）"
+                    },
+                    "Actual": {
+                      "type": "number",
+                      "description": "实际容量（kW）"
+                    },
+                    "Ratio": {
+                      "type": "number",
+                      "description": "贡献比例（%）"
+                    }
+                  }
+                }
+              },
+              "down_regulation": {
+                "type": "object",
+                "description": "下调/吸收容量数据",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "Count": {
+                      "type": "integer",
+                      "description": "资源数量"
+                    },
+                    "Theoretical": {
+                      "type": "number",
+                      "description": "理论容量（kW）"
+                    },
+                    "Actual": {
+                      "type": "number",
+                      "description": "实际容量（kW）"
+                    },
+                    "Ratio": {
+                      "type": "number",
+                      "description": "贡献比例（%）"
+                    }
+                  }
+                }
+              }
+            },
+            "required": ["up_regulation", "down_regulation"]
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "t_snapshot": {
+                "type": "integer",
+                "description": "时间快照"
+              },
+              "resource_groups": {
+                "type": "object",
+                "description": "资源分组配置",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "required": ["t_snapshot", "resource_groups"]
+          }
+        },
+        "required": ["success", "data", "metadata"]
       }
     }
   },
@@ -803,12 +1430,28 @@
       "description": "API健康状态检查"
     },
     {
-      "name": "约束矩阵",
-      "description": "电力网络约束矩阵构建"
+      "name": "优化计算 (agg1)",
+      "description": "基础线性规划优化算法（agg1）"
     },
     {
-      "name": "聚合器",
-      "description": "VPP聚合器管理和聚合优化计算"
+      "name": "优化计算 (agg2)",
+      "description": "注入/吸收功率优化算法（agg2）"
+    },
+    {
+      "name": "优化计算 (agg3)",
+      "description": "24小时滚动优化算法（agg3）"
+    },
+    {
+      "name": "约束矩阵 (agg4)",
+      "description": "电力网络约束矩阵构建（agg4算法）"
+    },
+    {
+      "name": "聚合器 (agg4)",
+      "description": "VPP聚合器管理和聚合优化计算（agg4算法）"
+    },
+    {
+      "name": "容量计算 (agg5)",
+      "description": "基于资源分组的快照容量计算（agg5算法）"
     }
   ]
 }
