@@ -107,7 +107,6 @@ curl -X POST http://localhost:5123/xxaqy-api/aggregator/solve/single \
   每类资源上调贡献量: contrib_inj,
   每类资源下调贡献量: contrib_abs
   每类资源占比 :ratio
-
-
-
--
+- **resources_api**  新增资源展示，可增加
+    - `current_data = read_data_from_txt()`返回资源参数
+    - `save_to_txt`请求参数为资源信息，返回为增加后返回更新后的参数

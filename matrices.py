@@ -127,7 +127,8 @@ def build_matrices(verbose: bool = False):
     print(C_mV_load)
     # VPP 节点集（假设）
     vpp_nodes = [10, 15, 18, 20, 25]
-    vpp_indices = np.array(vpp_nodes) - 1
+    #vpp_indices = np.array(vpp_nodes) - 1
+    vpp_indices = np.arange(32) # 转为 0-based 索引
 
     # 提取 VPP 节点的系数矩阵 (32 x |VPP|)，这里是怎么取的
     A_P_MV = gamma_MV[:, vpp_indices]

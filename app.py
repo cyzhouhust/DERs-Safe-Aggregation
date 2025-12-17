@@ -8,8 +8,8 @@ import numpy as np
 import traceback
 from scipy.optimize import linprog
 from matrices import build_matrices
-from agg4 import VPPAggregator
-from agg5 import solve_snapshot_capacity, RESOURCE_GROUPS
+from agg4 import VPPAggregator,read_and_filter_vpp_data, get_active_nodes, generate_config_by_type, convert_static_to_profiles
+from agg5 import VPPAggregator1,solve_snapshot_capacity, RESOURCE_GROUPS, get_snapshot_bounds
 
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
@@ -167,152 +167,89 @@ def init_aggregator():
             'traceback': traceback.format_exc()
         }), 500
 
-
 @app.route('/xxaqy-api/agg4/aggregator/solve', methods=['POST'])
 def solve_dispatch():
     """
-    执行聚合优化计算
-    请求体:
+    聚合优化接口
+    请求体示例:
     {
-        "vpp_config": {  # 可选，使用字典格式
-            "Type A (Solar)": [10, 15],
-            "Type B (Wind)": [18],
-            "Type C (ESS)": [20],
-            "Type D (Gas)": [25]
-        },
-        或
-        "vpp_nodes": [10, 15, 18, 20, 25],  # 可选，使用列表格式（自动分组）
-        "p_inj_max_profile": [[40000, 10000, 40000, 4000, 4000], ...],  # T x num_vpp
-        "p_abs_max_profile": [[1000, 1000, 1000, 1000, 1000], ...],     # T x num_vpp
-        "q_ratio": 0.5,  # 可选，默认0.5
-        "use_cache": true  # 可选，是否使用缓存的聚合器实例
+        "vpp_nodes": [10, 15, 18, 20, 25]
     }
     """
     try:
+        # 1. 解析请求参数
         data = request.get_json()
-        
         if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Request body is required'
-            }), 400
+            return jsonify({'success': False, 'error': 'Request body is required'}), 400
+            
+        # 获取节点列表 (支持 [10, 15] 这种 int 列表)
+        node_ids = data.get('vpp_nodes', [])
+        if not isinstance(node_ids, list) or not node_ids:
+            return jsonify({'success': False, 'error': 'vpp_nodes must be a non-empty list'}), 400
+
+        # -------------------------------------------------------
+        # 2. 调用核心业务逻辑 (连接你的 Python 脚本功能)
+        # -------------------------------------------------------
         
-        p_inj_max_profile = data.get('p_inj_max_profile')
-        p_abs_max_profile = data.get('p_abs_max_profile')
-        q_ratio = data.get('q_ratio', 0.5)
-        use_cache = data.get('use_cache', True)
+        # A. 格式转换：[10, 15] -> ['bus 10', 'bus 15']
+        target_nodes = [f"bus {n}" for n in node_ids]
+
+        # B. 读取并筛选资源 (复用你原来的函数)
+        resources = read_and_filter_vpp_data(target_nodes)
+        if not resources:
+            return jsonify({'success': False, 'error': 'No resources found for the specified nodes'}), 404
+
+        # C. 识别激活节点 & 建立映射 (复用你原来的函数)
+        active_nodes_str, local_map = get_active_nodes(resources)
         
-        # 验证输入
-        if p_inj_max_profile is None or p_abs_max_profile is None:
-            return jsonify({
-                'success': False,
-                'error': 'p_inj_max_profile and p_abs_max_profile are required'
-            }), 400
+        # D. 生成分组配置 & 功率曲线 (关键：在后端生成 p_inj, p_abs)
+        dynamic_config = generate_config_by_type(resources, active_nodes_str)
+        p_inj, p_abs = convert_static_to_profiles(resources, active_nodes_str, local_map)
+
+        # E. 初始化聚合器并计算
+        agg = VPPAggregator(active_nodes_str, local_map, dynamic_config)
         
-        # 转换为 numpy 数组
-        p_inj_max_profile = np.array(p_inj_max_profile)
-        p_abs_max_profile = np.array(p_abs_max_profile)
-        
-        # 验证维度
-        if len(p_inj_max_profile.shape) != 2 or len(p_abs_max_profile.shape) != 2:
-            return jsonify({
-                'success': False,
-                'error': 'p_inj_max_profile and p_abs_max_profile must be 2D arrays'
-            }), 400
-        
-        if p_inj_max_profile.shape != p_abs_max_profile.shape:
-            return jsonify({
-                'success': False,
-                'error': 'p_inj_max_profile and p_abs_max_profile must have the same shape'
-            }), 400
-        
-        T, num_vpp = p_inj_max_profile.shape
-        
-        # 处理 vpp_config 或 vpp_nodes
-        if 'vpp_config' in data:
-            vpp_config = data['vpp_config']
-            if not isinstance(vpp_config, dict):
-                return jsonify({
-                    'success': False,
-                    'error': 'vpp_config must be a dictionary'
-                }), 400
-            # 从配置中提取所有节点
-            all_nodes = []
-            for nodes in vpp_config.values():
-                all_nodes.extend(nodes)
-        elif 'vpp_nodes' in data:
-            vpp_nodes = data['vpp_nodes']
-            if not isinstance(vpp_nodes, list):
-                return jsonify({
-                    'success': False,
-                    'error': 'vpp_nodes must be a list'
-                }), 400
-            # 自动创建默认分组
-            vpp_config = {
-                'Type A (Solar)': [10, 15],
-                'Type B (Wind)': [18],
-                'Type C (ESS)': [20],
-                'Type D (Gas)': [25]
+        if not agg.matrices_ready:
+            return jsonify({'success': False, 'error': 'Grid matrices initialization failed'}), 500
+
+        # F. 执行优化，得到 results 字典
+        # 这里的 results 结构就是: {'net_inj_max': array, 'contrib_inj': dict...}
+        results = agg.solve_dispatch(p_inj, p_abs)
+
+        # -------------------------------------------------------
+        # 3. 结果序列化 (Numpy 转 List)
+        # -------------------------------------------------------
+        if results:
+            # 定义一个辅助函数，递归地将 numpy array 转为 list
+            def serialize_data(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: serialize_data(v) for k, v in obj.items()}
+                return obj
+
+            # 构造最终返回结构
+            response_data = {
+                # 核心结果
+                'net_inj_max': serialize_data(results['net_inj_max']),
+                'net_abs_max': serialize_data(results['net_abs_max']),
+                'phy_inj_sum': serialize_data(results['phy_inj_sum']),
+                'phy_abs_sum': serialize_data(results['phy_abs_sum']),
+                # 贡献明细 (前端画堆叠图用)
+                'contrib_inj': serialize_data(results['contrib_inj']),
+                'contrib_abs': serialize_data(results['contrib_abs'])
             }
-            all_nodes = vpp_nodes
+
+            return jsonify({
+                'success': True,
+                'data': response_data
+            }), 200
         else:
-            # 使用默认配置
-            vpp_config = {
-                'Type A (Solar)': [10, 15],
-                'Type B (Wind)': [18],
-                'Type C (ESS)': [20],
-                'Type D (Gas)': [25]
-            }
-            all_nodes = [10, 15, 18, 20, 25]
-        
-        if num_vpp != len(all_nodes):
-            return jsonify({
-                'success': False,
-                'error': f'Number of nodes in profiles ({num_vpp}) does not match vpp_config nodes ({len(all_nodes)})'
-            }), 400
-        
-        # 获取或创建聚合器
-        cache_key = ','.join(map(str, sorted(all_nodes)))
-        if use_cache and cache_key in aggregator_cache:
-            aggregator = aggregator_cache[cache_key]
-        else:
-            aggregator = VPPAggregator(vpp_config)
-            if use_cache:
-                aggregator_cache[cache_key] = aggregator
-        
-        # 执行优化
-        results = aggregator.solve_dispatch(
-            p_inj_max_profile,
-            p_abs_max_profile,
-            q_ratio=q_ratio
-        )
-        
-        if results is None:
-            return jsonify({
-                'success': False,
-                'error': 'Optimization failed: network matrices not initialized'
-            }), 500
-        
-        # 转换为可序列化的格式
-        response = {
-            'success': True,
-            'data': {
-                'net_inj_max': results['net_inj_max'].tolist(),
-                'net_abs_max': results['net_abs_max'].tolist(),
-                'phy_inj_sum': results['phy_inj_sum'].tolist(),
-                'phy_abs_sum': results['phy_abs_sum'].tolist()
-            },
-            'metadata': {
-                'vpp_config': vpp_config,
-                'num_time_steps': T,
-                'num_vpp_nodes': num_vpp,
-                'q_ratio': q_ratio
-            }
-        }
-        
-        return jsonify(response), 200
-        
+            return jsonify({'success': False, 'error': 'Optimization calculation failed'}), 500
+
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         return jsonify({
             'success': False,
             'error': str(e),
@@ -323,135 +260,51 @@ def solve_dispatch():
 @app.route('/xxaqy-api/agg4/aggregator/solve/single', methods=['POST'])
 def solve_single_time_step():
     """
-    计算单个时间步的聚合能力
-    请求体:
-    {
-        "vpp_config": {  # 可选
-            "Type A (Solar)": [10, 15],
-            "Type B (Wind)": [18],
-            "Type C (ESS)": [20],
-            "Type D (Gas)": [25]
+    单时间点聚合能力计算接口
+    输入: {"vpp_nodes": [10, 15, 18, 20]}
+    输出: 类似于"储能": {
+          "act_val": 950.0,#实际贡献容量
+          "count": 1,#数量
+          "ratio": 29.97,#贡献占比
+          "th_val": 950.0#理论贡献容量
         },
-        或
-        "vpp_nodes": [10, 15, 18, 20, 25],  # 可选
-        "p_inj_max": [40000, 10000, 40000, 4000, 4000],  # 当前时刻各节点最大注入功率
-        "p_abs_max": [1000, 1000, 1000, 1000, 1000],    # 当前时刻各节点最大吸收功率（正值）
-        "q_ratio": 0.5
-    }
     """
     try:
+        # 1. 解析请求
         data = request.get_json()
-        
         if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Request body is required'
-            }), 400
-        
-        p_inj_max = data.get('p_inj_max')
-        p_abs_max = data.get('p_abs_max')
-        q_ratio = data.get('q_ratio', 0.5)
-        
-        # 验证输入
-        if p_inj_max is None or p_abs_max is None:
-            return jsonify({
-                'success': False,
-                'error': 'p_inj_max and p_abs_max are required'
-            }), 400
-        
-        # 转换为 numpy 数组
-        p_inj_max = np.array(p_inj_max)
-        p_abs_max = np.array(p_abs_max)
-        
-        # 验证维度
-        if len(p_inj_max.shape) != 1 or len(p_abs_max.shape) != 1:
-            return jsonify({
-                'success': False,
-                'error': 'p_inj_max and p_abs_max must be 1D arrays'
-            }), 400
-        
-        # 处理 vpp_config 或 vpp_nodes
-        if 'vpp_config' in data:
-            vpp_config = data['vpp_config']
-            if not isinstance(vpp_config, dict):
-                return jsonify({
-                    'success': False,
-                    'error': 'vpp_config must be a dictionary'
-                }), 400
-            all_nodes = []
-            for nodes in vpp_config.values():
-                all_nodes.extend(nodes)
-        elif 'vpp_nodes' in data:
-            vpp_nodes = data['vpp_nodes']
-            vpp_config = {
-                'Type A (Solar)': [10, 15],
-                'Type B (Wind)': [18],
-                'Type C (ESS)': [20],
-                'Type D (Gas)': [25]
-            }
-            all_nodes = vpp_nodes
-        else:
-            vpp_config = {
-                'Type A (Solar)': [10, 15],
-                'Type B (Wind)': [18],
-                'Type C (ESS)': [20],
-                'Type D (Gas)': [25]
-            }
-            all_nodes = [10, 15, 18, 20, 25]
-        
-        if len(p_inj_max) != len(p_abs_max) or len(p_inj_max) != len(all_nodes):
-            return jsonify({
-                'success': False,
-                'error': 'Length mismatch between p_inj_max, p_abs_max, and vpp nodes'
-            }), 400
-        
-        # 扩展为单时间步的 2D 数组
-        p_inj_max_profile = p_inj_max.reshape(1, -1)
-        p_abs_max_profile = p_abs_max.reshape(1, -1)
-        
-        # 获取或创建聚合器
-        cache_key = ','.join(map(str, sorted(all_nodes)))
-        if cache_key in aggregator_cache:
-            aggregator = aggregator_cache[cache_key]
-        else:
-            aggregator = VPPAggregator(vpp_config)
-            aggregator_cache[cache_key] = aggregator
-        
-        # 执行优化
-        results = aggregator.solve_dispatch(
-            p_inj_max_profile,
-            p_abs_max_profile,
-            q_ratio=q_ratio
-        )
-        
-        if results is None:
-            return jsonify({
-                'success': False,
-                'error': 'Optimization failed: network matrices not initialized'
-            }), 500
-        
-        # 返回单个时间步的结果
-        response = {
-            'success': True,
-            'data': {
-                'net_inj_max': float(results['net_inj_max'][0]),
-                'net_abs_max': float(results['net_abs_max'][0]),
-                'phy_inj_sum': float(results['phy_inj_sum'][0]),
-                'phy_abs_sum': float(results['phy_abs_sum'][0])
-            },
-            'metadata': {
-                'vpp_config': vpp_config,
-                'q_ratio': q_ratio
-            }
-        }
-        
-        return jsonify(response), 200
-        
-    except Exception as e:
+            return jsonify({'success': False, 'error': 'Request body required'}), 400
+        node_ids = data.get('vpp_nodes', [])
+        if not node_ids or not isinstance(node_ids, list):
+            return jsonify({'success': False, 'error': 'Invalid vpp_nodes list'}), 400 
+        target_nodes = [f"bus {n}" for n in node_ids]
+        # 2. 准备数据
+        # 2.1 读取资源
+        resources = read_and_filter_vpp_data(target_nodes)
+        if not resources:
+            return jsonify({'success': False, 'error': 'No resources found'}), 404
+        # 2.2 建立映射
+        active_nodes_str, local_map = get_active_nodes(resources)
+        # 2.3 生成单点物理边界 (snapshot)
+        dynamic_config = generate_config_by_type(resources, active_nodes_str)
+        # 默认取 t=12 的数据进行计算
+        p_inj_bounds, p_abs_bounds = get_snapshot_bounds(resources, active_nodes_str, local_map, time_snapshot=12)
+        # 3. 核心计算
+        agg = VPPAggregator1(active_nodes_str, local_map, dynamic_config)
+        if not agg.matrices_ready:
+            return jsonify({'success': False, 'error': 'Grid matrix error'}), 500
+        # 调用单点计算函数
+        results = agg.solve_snapshot(p_inj_bounds, p_abs_bounds)
         return jsonify({
-            'success': False,
+            'success': True,
+            'data': results
+        }), 200
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False, 
             'error': str(e),
-            'traceback': traceback.format_exc()
+            'trace': traceback.format_exc()
         }), 500
 
 

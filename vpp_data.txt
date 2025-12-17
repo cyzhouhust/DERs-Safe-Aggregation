@@ -1,0 +1,7 @@
+id,type,site,rated_capacity,up_capacity,down_capacity,resp_time,status
+AC-Cluster-01,空调,bus 10,1.5 MW,600,900,30 min,可用
+EV-Hub-03,充电桩,bus 15,0.8 MW,400,300,5 min,可用
+PV-Block-12,光伏,bus 18,3.5 MW,3500,0,即时,可用
+BESS-02,储能,bus 20,1.0/2.0 MWh,800,800,1s,可用
+AC-Cluster-02,空调,bus 25,2.2 MW,880,1320,30 min,可用
+Wind-Farm-01,光伏,bus 30,2.0 MW,2000,0,即时,可用

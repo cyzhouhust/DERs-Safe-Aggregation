@@ -1,201 +1,314 @@
+import os
 import numpy as np
 import pandas as pd
 from scipy.optimize import linprog
 
 # ==========================================
-# 1. 模拟环境与配置 (集成输入)
+# 1. 基础配置与模拟矩阵
 # ==========================================
+GLOBAL_NODES = list(range(2, 34))
+GLOBAL_NODE_MAP = {f"bus {n}": i for i, n in enumerate(GLOBAL_NODES)}
+FILE_PATH = 'vpp_data.txt'
 
-# 资源分组配置
-RESOURCE_GROUPS = {
-    "Type_A (Node 10,15)": [0, 1], 
-    "Type_B (Node 18)":    [2],    
-    "Type_C (Node 20)":    [3],    
-    "Type_D (Node 25)":    [4]     
-}
+def build_matrices(verbose=False):
+    """模拟电网矩阵 (32节点)"""
+    n = 32
+    # 模拟简单的电网约束：灵敏度矩阵
+    return (np.eye(n)*0.1, np.ones(n)*100, np.eye(n)*0.05, np.ones(n)*100)
 
-# 物理参数基准
-BASE_P_MAX = np.array([40000, 10000, 40000, 4000, 4000])     # 发电上限
-BASE_P_MIN_ABS = np.array([1000, 1000, 1000, 1000, 1000])    # 吸收上限
+def create_vpp_data_file():
+    """生成模拟数据文件"""
+    headers = "id,type,site,rated_capacity,up_capacity,down_capacity,resp_time,status"
+    data_lines = [
+        "AC-Cluster-01,空调,bus 10,1.5 MW,600,900,30 min,可用",
+        "EV-Hub-03,充电桩,bus 15,0.8 MW,400,300,5 min,约束",
+        "PV-Block-12,光伏,bus 18,3.5 MW,3500,0,即时,可用",
+        "BESS-02,储能,bus 20,1.0/2.0 MWh,800,800,1s,可用",
+        "AC-Cluster-02,空调,bus 25,2.2 MW,880,1320,30 min,可用",
+        "Small-Storage,储能,bus 20,0.5MW,200,150,5 min,可用",
+        "Wind-Farm-01,风电,bus 30,2.0 MW,2000,0,即时,可用"
+    ]
+    with open(FILE_PATH, 'w', encoding='utf-8') as f:
+        f.write(headers + "\n")
+        f.write("\n".join(data_lines))
 
-def build_mock_matrices(num_vars):
+# ==========================================
+# 2. 数据处理辅助函数
+# ==========================================
+HEADERS = ['id', 'type', 'site', 'rated_capacity', 'up_capacity', 'down_capacity', 'resp_time', 'status']
+
+def read_and_filter_vpp_data(target_nodes=None):
+    if not os.path.exists(FILE_PATH): create_vpp_data_file()
+    data = []
+    with open(FILE_PATH, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+        if len(lines) < 2: return []
+        for line in lines[1:]:
+            parts = line.strip().split(',')
+            if len(parts) == len(HEADERS):
+                item = {HEADERS[i]: parts[i].strip() for i in range(len(HEADERS))}
+                if '可用' not in item['status']: continue
+                if target_nodes and item['site'] not in target_nodes: continue
+                data.append(item)
+    return data
+
+def get_active_nodes(resources):
+    active_nodes_str = sorted(list(set(r['site'] for r in resources)), 
+                              key=lambda x: int(x.replace('bus', '').strip()))
+    local_map = {name: i for i, name in enumerate(active_nodes_str)}
+    return active_nodes_str, local_map
+
+def generate_config_by_type(resources, active_nodes):
+    config = {}
+    for res in resources:
+        r_type = res['type']
+        site = res['site']
+        if site not in active_nodes: continue
+        if r_type not in config: config[r_type] = []
+        if site not in config[r_type]: config[r_type].append(site)
+    return config
+
+def get_snapshot_bounds(resources, active_nodes, local_map, time_snapshot=12):
     """
-    模拟生成电网灵敏度矩阵 (A x <= b)
-    这里生成一个'虚拟'电网约束，强制总功率不能超过物理极限的 80%，
-    以此模拟电网阻塞，确保 实际容量 < 理论容量，方便观察效果。
+    【修改点】只计算单时间点的物理边界
+    time_snapshot: 默认取 12:00 的状态
     """
-    # 模拟一个限制总功率的约束: sum(P) <= Limit
-    # 变量前一半是 P，后一半是 Q
-    n_p = num_vars // 2
+    num_active = len(active_nodes)
+    p_inj_bounds = np.zeros(num_active) 
+    p_abs_bounds = np.zeros(num_active)
     
-    # 构造 A矩阵: [1, 1, 1, 1, 1, 0, 0...] (只限制 P 的总和)
-    A_mock = np.zeros((2, num_vars))
-    A_mock[0, :n_p] = 1.0   # 上限约束系数
-    A_mock[1, :n_p] = -1.0  # 下限约束系数
-    
-    # 构造 b向量: 限制为物理总量的 80%
-    phy_sum = np.sum(BASE_P_MAX)
-    b_mock = np.array([phy_sum * 0.8, phy_sum * 0.8]) 
-    
-    return A_mock, b_mock
+    # 模拟时刻因子
+    t = time_snapshot
+    factor_solar = np.exp(-((t - 12)**2) / (2 * 3.0**2)) # 中午大
+    factor_wind = 0.6 + 0.3 * np.sin((t)/24*6.28)        # 随机波动
+    factor_flat = 1.0
 
-def get_physical_bounds(t):
-    """计算 t 时刻的物理边界"""
-    hour = t + 1
-    # 模拟正弦波动
-    scale = 0.5 + 0.5 * np.cos((hour - 12) / 24 * 2 * np.pi)
-    
-    # 理论最大注入 (Injection Max)
-    p_inj_max = BASE_P_MAX * scale
-    # 理论最大吸收 (Absorption Max, 这里用正值表示容量)
-    p_abs_max = BASE_P_MIN_ABS * (1 + 0.2 * scale)
-    
-    # 无功边界
-    q_lim = p_inj_max * 0.5
-    return p_inj_max, p_abs_max, -q_lim, q_lim
-
-# ==========================================
-# 2. 核心计算逻辑
-# ==========================================
-
-def solve_snapshot_capacity(t_snapshot=12):
-    num_vpp = 5
-    num_vars = 2 * num_vpp
-    
-    # 1. 获取物理边界
-    p_phys_inj, p_phys_abs, q_min, q_max = get_physical_bounds(t_snapshot)
-    
-    # --- 计算指标 A: 理论可调容量 (Theoretical) ---
-    theo_inj_total = np.sum(p_phys_inj)
-    theo_abs_total = np.sum(p_phys_abs)
-    
-    # 2. 获取约束矩阵 (模拟)
-    A_ub, b_ub = build_mock_matrices(num_vars)
-    
-    # 3. 构造变量边界 Bounds (P_load 约定)
-    # P_load = -P_inj
-    # Range: [-Max_Inj, Max_Abs]
-    bounds_P = list(zip(-p_phys_inj, p_phys_abs))
-    bounds_Q = list(zip(q_min, q_max))
-    bounds = bounds_P + bounds_Q
-    
-    # 4. 定义结果容器
-    result_data = {
-        'Up': {},   # 上调/注入
-        'Down': {}  # 下调/吸收
-    }
-    
-    # ==========================
-    # 场景 1: 计算实际最大注入 (Actual Injection)
-    # ==========================
-    # Max Injection => Min Sum(P_load)
-    c_inj = np.hstack([np.ones(num_vpp), np.zeros(num_vpp)])
-    res_inj = linprog(c_inj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-    
-    if res_inj.success:
-        actual_inj_total = -res_inj.fun
-        p_vals = -res_inj.x[:num_vpp] # 提取 P 并转为正值
+    for res in resources:
+        site = res['site']
+        if site not in local_map: continue
+        idx = local_map[site]
         
-        # 统计分项
-        result_data['Up']['Total'] = {
-            'Theoretical': theo_inj_total,
-            'Actual': actual_inj_total
+        try:
+            up = float(res['up_capacity'])
+            down = float(res['down_capacity'])
+        except: continue
+
+        r_type = res['type']
+        if '光伏' in r_type: profile = factor_solar
+        elif '风' in r_type: profile = factor_wind
+        else: profile = factor_flat
+            
+        p_inj_bounds[idx] += up * profile
+        p_abs_bounds[idx] += down * profile
+        
+    return p_inj_bounds, p_abs_bounds
+
+# ==========================================
+# 3. 核心聚合器类 (Single Time Step)
+# ==========================================
+class VPPAggregator1:
+    def __init__(self, active_nodes_str, local_map, vpp_config):
+        self.active_nodes_str = active_nodes_str 
+        self.local_map = local_map              
+        self.vpp_config = vpp_config            
+        self.num_vars = len(active_nodes_str)    
+        
+        self.matrices_ready = False
+        self._load_and_reduce_matrices()
+
+    def _load_and_reduce_matrices(self):
+        ret = build_matrices()
+        if ret is None:
+            self.matrices_ready = False
+            return
+
+        A_V, b_V, A_I, b_I = ret[0], ret[1], ret[2], ret[3]
+
+        # 合并约束矩阵（行方向堆叠）和边界向量
+        try:
+            A_full = np.vstack([A_V, A_I])
+        except Exception:
+            # 如果 A_V 或 A_I 不是二维数组，尝试强制转为二维
+            A_V2 = np.atleast_2d(A_V)
+            A_I2 = np.atleast_2d(A_I)
+            A_full = np.vstack([A_V2, A_I2])
+
+        # 边界向量按行拼接为单列向量
+        try:
+            self.b_total = np.concatenate([np.ravel(b_V), np.ravel(b_I)])
+        except Exception:
+            self.b_total = np.ravel(b_V).tolist() + np.ravel(b_I).tolist()
+
+        # 确保列数足够（预期为 2 * full_grid_len），不足时用 0 列填充
+        full_grid_len = len(GLOBAL_NODES)
+        expected_cols = 2 * full_grid_len
+        cols = A_full.shape[1]
+        if cols < expected_cols:
+            pad_cols = expected_cols - cols
+            pad = np.zeros((A_full.shape[0], pad_cols))
+            A_full = np.hstack([A_full, pad])
+
+        # 计算要提取的列索引（P 和 Q 列）
+        target_p_indices = []
+        target_q_indices = []
+        for bus_name in self.active_nodes_str:
+            if bus_name in GLOBAL_NODE_MAP:
+                g_idx = GLOBAL_NODE_MAP[bus_name]
+                target_p_indices.append(g_idx)
+                target_q_indices.append(g_idx + full_grid_len)
+
+        # 提取子矩阵，确保索引有效
+        try:
+            cols_to_take = target_p_indices + target_q_indices
+            self.A_total = A_full[:, cols_to_take]
+            self.A_total = np.nan_to_num(self.A_total, nan=0.0)
+            self.b_total = np.nan_to_num(self.b_total, nan=0.0)
+            self.matrices_ready = True
+        except Exception:
+            self.matrices_ready = False
+
+    def _solve_robust(self, c, A_ub, b_ub, bounds):
+        """通用求解器封装"""
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+        if res.success:
+            # linprog 求的是 min c*x，如果是求最大值，c取负，结果取负
+            val = -res.fun if c[0] < 0 else res.fun
+            return res.x[:self.num_vars], val
+        return np.zeros(self.num_vars), 0.0
+
+    def solve_snapshot(self, p_inj_bounds, p_abs_bounds, q_ratio=0.5):
+        """
+        【核心修改】计算单时间点的聚合能力
+        返回: 包含 count, th_val, act_val, ratio 的字典结构
+        """
+        if not self.matrices_ready: return None
+        
+        # 1. 构造优化参数
+        # 注入目标 (Max Injection -> Min -Sum(P))
+        c_inj = np.hstack([np.ones(self.num_vars), np.zeros(self.num_vars)]) 
+        # 消纳目标 (Max Absorption -> Min -Sum(P_abs))
+        c_abs = np.hstack([-np.ones(self.num_vars), np.zeros(self.num_vars)])
+        
+        # 约束矩阵 A_ub * [P, Q]^T <= b
+        # 注意：这里 P 定义为注入为正，但在矩阵中通常 P_load 为正
+        # 这里简化处理：假设矩阵兼容 P_inj 的方向符号
+        A_ub = np.hstack([-self.A_total[:, :self.num_vars], self.A_total[:, self.num_vars:]])
+        
+        # 变量边界
+        # P范围: [-Max_Inj, Max_Abs]
+        bounds = list(zip(-p_inj_bounds, p_abs_bounds)) + \
+                 list(zip(-np.minimum(p_inj_bounds*q_ratio, 300), np.minimum(p_inj_bounds*q_ratio, 300)))
+        
+        # 2. 执行计算
+        # 计算最大注入能力
+        sol_inj_vec, act_inj_val = self._solve_robust(c_inj, A_ub, self.b_total, bounds)
+        act_inj_val = max(0, -act_inj_val if act_inj_val < 0 else 0) # 修正符号确保为正
+        p_inj_opt = -sol_inj_vec # 还原为注入正值
+
+        # 计算最大消纳能力
+        sol_abs_vec, act_abs_val = self._solve_robust(c_abs, A_ub, self.b_total, bounds)
+        act_abs_val = max(0, act_abs_val)
+        p_abs_opt = sol_abs_vec
+        
+        # 3. 结果统计与格式化
+        output = {
+            "Up": {"Total": {}, "Details": {}},
+            "Down": {"Total": {}, "Details": {}}
         }
         
-        for name, idxs in RESOURCE_GROUPS.items():
-            # 数量
-            count = len(idxs)
-            # 理论 (该组物理边界之和)
-            th_val = np.sum(p_phys_inj[idxs])
-            # 实际 (优化结果之和)
-            act_val = np.sum(p_vals[idxs])
-            # 占比
-            ratio = (act_val / actual_inj_total * 100) if actual_inj_total > 1e-3 else 0
-            
-            result_data['Up'][name] = {
-                'Count': count,
-                'Theoretical': th_val,
-                'Actual': act_val,
-                'Ratio': ratio
-            }
-            
-    # ==========================
-    # 场景 2: 计算实际最大吸收 (Actual Absorption)
-    # ==========================
-    # Max Absorption => Min Sum(-P_load)
-    c_abs = np.hstack([-np.ones(num_vpp), np.zeros(num_vpp)])
-    res_abs = linprog(c_abs, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-    
-    if res_abs.success:
-        actual_abs_total = res_abs.fun
-        p_vals = res_abs.x[:num_vpp] # 正值即为吸收量
-        
-        result_data['Down']['Total'] = {
-            'Theoretical': theo_abs_total,
-            'Actual': actual_abs_total
+        # --- 填充 Up (注入) 数据 ---
+        theo_inj_total = np.sum(p_inj_bounds)
+        output["Up"]["Total"] = {
+            "count": self.num_vars, # 聚合节点数
+            "th_val": float(f"{theo_inj_total:.2f}"),
+            "act_val": float(f"{act_inj_val:.2f}")
         }
         
-        for name, idxs in RESOURCE_GROUPS.items():
-            count = len(idxs)
-            th_val = np.sum(p_phys_abs[idxs])
-            act_val = np.sum(p_vals[idxs])
-            ratio = (act_val / actual_abs_total * 100) if actual_abs_total > 1e-3 else 0
+        for r_type, sites in self.vpp_config.items():
+            idxs = [self.local_map[s] for s in sites if s in self.local_map]
+            if not idxs: continue
             
-            result_data['Down'][name] = {
-                'Count': count,
-                'Theoretical': th_val,
-                'Actual': act_val,
-                'Ratio': ratio
+            # 统计该类型的各项指标
+            sub_count = len(idxs) # 这里的count是指涉及了几个物理节点
+            sub_th = np.sum(p_inj_bounds[idxs])
+            sub_act = np.sum(p_inj_opt[idxs])
+            # 占比 = 该类型实际贡献 / 总实际能力
+            ratio = (sub_act / act_inj_val * 100) if act_inj_val > 1e-3 else 0.0
+            
+            output["Up"]["Details"][r_type] = {
+                "count": sub_count,
+                "th_val": float(f"{sub_th:.2f}"),
+                "act_val": float(f"{sub_act:.2f}"),
+                "ratio": float(f"{ratio:.2f}")
+            }
+
+        # --- 填充 Down (消纳) 数据 ---
+        theo_abs_total = np.sum(p_abs_bounds)
+        output["Down"]["Total"] = {
+            "count": self.num_vars,
+            "th_val": float(f"{theo_abs_total:.2f}"),
+            "act_val": float(f"{act_abs_val:.2f}")
+        }
+        
+        for r_type, sites in self.vpp_config.items():
+            idxs = [self.local_map[s] for s in sites if s in self.local_map]
+            if not idxs: continue
+            
+            sub_count = len(idxs)
+            sub_th = np.sum(p_abs_bounds[idxs])
+            sub_act = np.sum(p_abs_opt[idxs])
+            ratio = (sub_act / act_abs_val * 100) if act_abs_val > 1e-3 else 0.0
+            
+            output["Down"]["Details"][r_type] = {
+                "count": sub_count,
+                "th_val": float(f"{sub_th:.2f}"),
+                "act_val": float(f"{sub_act:.2f}"),
+                "ratio": float(f"{ratio:.2f}")
             }
             
-    return result_data
+        return output
 
-# ==========================================
-# 3. 输出展示 (Output)
-# ==========================================
 
-def print_clean_report(data, direction_name, unit='kW'):
-    """格式化打印表格"""
-    if not data: return
-    
-    # 转换为 DataFrame
-    rows = []
-    # 遍历每类资源
-    for name in RESOURCE_GROUPS.keys():
-        info = data.get(name, {})
-        rows.append({
-            'Resource Group': name,
-            'Quantity': info.get('Count', 0),
-            f'Theo Cap ({unit})': info.get('Theoretical', 0.0),
-            f'Actual Cap ({unit})': info.get('Actual', 0.0),
-            'Contrib (%)': info.get('Ratio', 0.0)
-        })
-    
-    df = pd.DataFrame(rows)
-    
-    # 设置显示格式
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', 1000)
-    pd.set_option('display.float_format', lambda x: '%.2f' % x)
-    
-    # 获取总量数据
-    total_info = data.get('Total', {})
-    total_theo = total_info.get('Theoretical', 0)
-    total_act = total_info.get('Actual', 0)
-    
-    print(f"\n>>> {direction_name} Capacity Report (Time: 12:00) <<<")
-    print("-" * 85)
-    print(df.to_string(index=False))
-    print("-" * 85)
-    print(f"SYSTEM TOTAL | {'--':<8} | {total_theo:>14.2f} | {total_act:>14.2f} | 100.00")
-    print("=" * 85)
+# --------- 兼容层: 提供 app.py 期望的接口 ---------
+# 默认的资源分组占位（可以由调用方覆盖）
+RESOURCE_GROUPS = {}
 
-if __name__ == "__main__":
-    # 执行计算
-    results = solve_snapshot_capacity(t_snapshot=12)
-    
-    # 输出 1: 上调/注入 (Injection)
-    print_clean_report(results['Up'], "MAX INJECTION (Up-Regulation)")
-    
-    # 输出 2: 下调/吸收 (Absorption)
-    print_clean_report(results['Down'], "MAX ABSORPTION (Down-Regulation)")
+def solve_snapshot_capacity(t_snapshot=12, target_nodes=None, resource_groups=None):
+    """
+    兼容旧接口：计算单一时间快照的聚合能力并返回与 `app.py` 期望格式兼容的结果。
+    参数:
+      - t_snapshot: 时间点（小时）
+      - target_nodes: 可选，节点列表，例如 ['bus 10', 'bus 18']
+      - resource_groups: 可选，自定义分组（目前仅作为占位）
+    返回: 与 `VPPAggregator.solve_snapshot` 相同的字典结构，或 None（失败）
+    """
+    # 1. 读取资源并筛选（使用已有实现）
+    resources = read_and_filter_vpp_data(target_nodes)
+    if not resources:
+        return None
+
+    # 2. 生成激活节点与本地映射
+    active_nodes_str, local_map = get_active_nodes(resources)
+
+    # 3. 生成分组配置（基于资源类型）
+    vpp_config = generate_config_by_type(resources, active_nodes_str)
+
+    # 4. 计算物理边界
+    p_inj_bounds, p_abs_bounds = get_snapshot_bounds(resources, active_nodes_str, local_map, time_snapshot=t_snapshot)
+
+    # 5. 初始化聚合器并计算快照能力
+    agg = VPPAggregator1(active_nodes_str, local_map, vpp_config)
+    if not agg.matrices_ready:
+        return None
+
+    results = agg.solve_snapshot(p_inj_bounds, p_abs_bounds)
+
+    # 6. 填充 RESOURCE_GROUPS（如果为空，则使用生成的分组）
+    global RESOURCE_GROUPS
+    if not RESOURCE_GROUPS:
+        try:
+            RESOURCE_GROUPS = {k: [local_map[s] for s in v if s in local_map] for k, v in vpp_config.items()}
+        except Exception:
+            RESOURCE_GROUPS = {}
+
+    return results
